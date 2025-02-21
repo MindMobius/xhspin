@@ -1,0 +1,7 @@
+xhs
+python-dotenv
+playwright
+flask
+gevent
+requests
+sqlalchemy
