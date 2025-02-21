@@ -15,7 +15,7 @@ class XHSMonitor:
         self.db = init_db()
         self.notifier = Notifier()
     
-    def check_user_changes(self, user_id: str, response_data: Dict[str, Any]) -> bool:
+    def check_user_changes(self, user_id: str, response_data: Dict[str, Any]) -> tuple[bool, dict]:
         user_info = XHSParser.parse_user_info(response_data)
         # 使用传入的 user_id 覆盖
         user_info.user_id = user_id
@@ -23,7 +23,7 @@ class XHSMonitor:
         user = self.db.query(User).filter_by(user_id=user_id).first()
         if not user:
             print(f"数据库中未找到用户: {user_id}")  # debug
-            return True
+            return True, {}
             
         print(f"数据库中的user_id: {user.user_id}")  # debug
             
@@ -36,28 +36,42 @@ class XHSMonitor:
         fields_to_compare = ['nickname', 'avatar', 'description', 'follows', 'fans', 'likes']
         user_dict = asdict(user_info)
         
+        changes = {}
         for field in fields_to_compare:
             old_val = normalize_value(getattr(user, field))
             new_val = normalize_value(user_dict[field])
             if old_val != new_val:
                 print(f"字段 {field} 发生变化: {old_val} -> {new_val}")  # debug用
-                return True
+                changes[field] = (old_val, new_val)
                 
-        return False
+        return bool(changes), changes
 
     def check_notes_changes(self, user_id: str, new_notes: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         existing_notes = self.db.query(Note).filter_by(user_id=user_id).all()
-        existing_note_ids = {note.note_id for note in existing_notes}
-        new_note_ids = {note['note_id'] for note in new_notes}
+        existing_note_ids = {note.note_id: note for note in existing_notes}
+        new_note_dict = {note['note_id']: note for note in new_notes}
         
-        added_notes = new_note_ids - existing_note_ids
-        removed_notes = existing_note_ids - new_note_ids
+        added_notes = []
+        removed_notes = []
+        
+        # 检查新增的笔记
+        for note_id, note in new_note_dict.items():
+            if note_id not in existing_note_ids:
+                added_notes.append(note)
+        
+        # 检查删除的笔记
+        for note_id, note in existing_note_ids.items():
+            if note_id not in new_note_dict:
+                removed_notes.append({
+                    'note_id': note.note_id,
+                    'title': note.title
+                })
         
         changes = []
         if added_notes:
-            changes.append({"type": "added", "notes": added_notes})
+            changes.append({"type": "新增", "notes": added_notes})
         if removed_notes:
-            changes.append({"type": "removed", "notes": removed_notes})
+            changes.append({"type": "删除", "notes": removed_notes})
         return changes
 
     def update_user(self, response_data: Dict[str, Any], user_id: str):
@@ -116,9 +130,10 @@ class XHSMonitor:
                     user_info_response = self.client.get_user_info(user_id)
                     user_info = XHSParser.parse_user_info(user_info_response)  # 解析用户信息
                     
-                    if self.check_user_changes(user_id, user_info_response):
+                    has_changes, changes = self.check_user_changes(user_id, user_info_response)
+                    if has_changes:
                         self.update_user(user_info_response, user_id)
-                        self.notifier.notify_user_change(asdict(user_info))
+                        self.notifier.notify_user_change(asdict(user_info), changes)
 
                     # 获取用户笔记前先休眠一下，避免请求太快
                     time.sleep(2)
